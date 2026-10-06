@@ -344,7 +344,7 @@ td {
         <input
             type="text"
             id="keyword"
-            placeholder="Ví dụ: Nguyễn Văn A hoặc 9A1"
+            placeholder="Nhập họ và tên giáo viên hoặc tên lớp, ví dụ: Nguyễn Văn A / 9A1"
         >
 
 
@@ -687,14 +687,40 @@ function normalizeName(value) {
    SO KHỚP
 ============================================================ */
 
+function normalizeTeacherName(value) {
+
+    let s = normalizeSpaces(value);
+
+    if (!s) return "";
+
+    /* Bỏ các tiền tố thường gặp trong TKB trường học */
+    s = s.replace(
+        /^(?:GVBM|GV|GVCN|GVHD|GIÁO VIÊN|GIAO VIEN|THẦY|THAY|CÔ|CO|THẦY CÔ|THAY CO|ÔNG|ONG|BÀ|BA)\s*[:.\-]?\s*/iu,
+        ""
+    );
+
+    /* Bỏ chú thích chức danh ở cuối */
+    s = s.replace(
+        /\s*[-–—(]\s*(?:GVBM|GVCN|GVHD|GV|GIÁO VIÊN|GIAO VIEN)\s*[).]?\s*$/iu,
+        ""
+    );
+
+    return normalizeSpaces(s);
+}
+
+
 function teacherMatchScore(
     teacher,
     keyword
 ) {
 
-    teacher = normalizeKey(teacher);
+    teacher = normalizeKey(
+        normalizeTeacherName(teacher)
+    );
 
-    keyword = normalizeKey(keyword);
+    keyword = normalizeKey(
+        normalizeTeacherName(keyword)
+    );
 
     if (!keyword) {
         return 0;
@@ -724,6 +750,21 @@ function teacherMatchScore(
         }
 
         if (ok) {
+            return 80;
+        }
+    }
+
+    /*
+     * Cho phép nhập theo kiểu đảo họ tên, ví dụ:
+     * Excel: Nguyễn Văn An
+     * Nhập:  An Nguyễn Văn
+     */
+    if (tokens.length > 1) {
+
+        const teacherTokens =
+            teacher.split(/\s+/).filter(Boolean);
+
+        if (tokens.every(t => teacherTokens.includes(t))) {
             return 75;
         }
     }
@@ -1546,16 +1587,84 @@ function findNearestClass(
 
 function cleanTeacherText(value) {
 
-    let s =
-        normalizeSpaces(value);
+    return normalizeTeacherName(value);
+}
 
-    s =
-        s.replace(
-            /^(GV|GVBM|GVHD|GIÁO VIÊN|GIAO VIEN)\s*[:\-]\s*/iu,
-            ""
-        );
 
-    return s.trim();
+/*
+ * Nhận diện giáo viên khi Excel gộp Môn + Giáo viên trong cùng một ô.
+ * Hỗ trợ nhiều kiểu thường gặp ở trường:
+ *
+ *   Hóa | GV: Nguyễn Văn A
+ *   Hóa - GV: Nguyễn Văn A
+ *   Hóa\n   Nguyễn Văn A
+ *   GV: Nguyễn Văn A
+ *   Giáo viên: Nguyễn Văn A
+ */
+function extractTeacherFromCell(value, keyword = "") {
+
+    const raw = String(value ?? "").trim();
+
+    if (!raw) return "";
+
+    const normalized = normalizeSpaces(raw);
+
+    const key = normalizeKey(keyword);
+
+    /* Có nhãn GV rõ ràng */
+    let m = normalized.match(
+        /(?:GVBM|GVCN|GVHD|GV|GIÁO VIÊN|GIAO VIEN)\s*[:.\-]?\s*(.+)$/iu
+    );
+
+    if (m) {
+        const t = cleanTeacherText(m[1]);
+        if (!key || teacherMatches(t, keyword)) return t;
+    }
+
+    /* Dạng Môn | Tên GV hoặc Môn ; Tên GV */
+    m = normalized.match(
+        /^(.+?)\s*(?:\||;)\s*(.+)$/u
+    );
+
+    if (m) {
+        const candidate = cleanTeacherText(m[2]);
+        if (candidate && (!key || teacherMatches(candidate, keyword))) {
+            return candidate;
+        }
+    }
+
+    /* Dạng Môn - Tên GV, nhưng không coi dấu gạch đầu dòng là tên */
+    m = normalized.match(
+        /^(.+?)\s+[-–—]\s+(.+)$/u
+    );
+
+    if (m) {
+        const candidate = cleanTeacherText(m[2]);
+        if (candidate && (!key || teacherMatches(candidate, keyword))) {
+            return candidate;
+        }
+    }
+
+    /* Ô có nhiều dòng: Môn / Tên giáo viên */
+    const lines = String(raw)
+        .split(/\r?\n|\r|<br\s*\/?>/i)
+        .map(x => cleanTeacherText(x))
+        .filter(Boolean);
+
+    if (lines.length > 1) {
+        for (const line of lines) {
+            if (!key || teacherMatches(line, keyword)) {
+                return line;
+            }
+        }
+    }
+
+    /* Nếu ô chỉ chứa tên giáo viên */
+    if (key && teacherMatches(normalized, keyword)) {
+        return cleanTeacherText(normalized);
+    }
+
+    return "";
 }
 
 
@@ -1677,6 +1786,9 @@ function parseTimetable(
     let totalPeriods = 0;
 
     let targetClass = "";
+
+    /* Tên giáo viên thực tế được đọc từ Excel để dùng khi xuất */
+    let matchedTeacherName = "";
 
     let week = "";
 
@@ -2072,8 +2184,26 @@ function parseTimetable(
 
                             teacher =
                                 parsed.teacher;
+                        } else {
+                            /* Nhận diện thông minh theo họ tên người dùng nhập */
+                            const detectedTeacher =
+                                extractTeacherFromCell(
+                                    subject,
+                                    options.keyword
+                                );
+
+                            if (detectedTeacher) {
+                                teacher = detectedTeacher;
+                            }
                         }
                     }
+
+                    /*
+                     * Trường hợp cột kế bên có dạng "GV: Họ Tên"
+                     * hoặc có chức danh/prefix.
+                     */
+                    teacher =
+                        cleanTeacherText(teacher);
 
 
                     if (
@@ -2135,6 +2265,11 @@ function parseTimetable(
                     );
 
                     totalPeriods++;
+
+                    if (!matchedTeacherName) {
+                        matchedTeacherName =
+                            normalizeTeacherName(teacher);
+                    }
 
                     found = true;
                 }
@@ -2421,7 +2556,8 @@ function parseTimetable(
         totalPeriods: totalPeriods,
         week: week,
         startDate: startDate,
-        targetClass: targetClass
+        targetClass: targetClass,
+        teacherName: matchedTeacherName
     };
 }
 
@@ -2460,9 +2596,13 @@ function renderResult(
         options.mode === "gvbm"
     ) {
 
+        const teacherDisplayName =
+            result.teacherName ||
+            normalizeTeacherName(options.keyword);
+
         let title =
             "Thời khóa biểu giáo viên: " +
-            options.keyword;
+            teacherDisplayName;
 
         if (
             options.subject
@@ -2982,6 +3122,11 @@ btnSearch.addEventListener(
 
         const options = {
 
+            /*
+             * GVBM: nhập họ và tên giáo viên.
+             * Hệ thống tự bỏ dấu, tiền tố GV/Thầy/Cô,
+             * và nhận diện các kiểu ghi tên trong Excel.
+             */
             mode:
                 searchMode.value,
 
