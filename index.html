@@ -2244,9 +2244,23 @@ function parseTimetable(
 
             /* =================================================
                GVCN
+               GIỮ NGUYÊN CÁC CHỨC NĂNG CŨ
+               BỔ SUNG: LẤY TOÀN BỘ TKB CỦA LỚP CHỦ NHIỆM
             ================================================= */
 
             else {
+
+                /*
+                 * Nếu nhập tên GVCN thì targetClass đã được
+                 * xác định từ ô SHCN + tên giáo viên ở phía trên.
+                 *
+                 * Nếu không tìm thấy lớp chủ nhiệm thì KHÔNG
+                 * lấy nhầm toàn bộ các lớp.
+                 */
+                if (!targetClass) {
+                    continue;
+                }
+
 
                 for (
                     const key of Object.keys(
@@ -2261,8 +2275,10 @@ function parseTimetable(
                         classColumns[key];
 
 
+                    /*
+                     * Chỉ lấy đúng lớp chủ nhiệm
+                     */
                     if (
-                        targetClass &&
                         normalizeClassName(
                             className
                         ) !==
@@ -2285,45 +2301,79 @@ function parseTimetable(
                         );
 
 
-                    const subjectKey =
-                        normalizeKey(
-                            subject
-                        );
+                    /*
+                     * Có thể gặp ô dạng:
+                     * Môn | GV: Tên giáo viên
+                     * hoặc Môn - GV: Tên giáo viên
+                     */
+                    if (
+                        subject &&
+                        !teacher
+                    ) {
+
+                        const parsed =
+                            extractSubjectTeacherFromCell(
+                                subject
+                            );
+
+                        if (
+                            parsed.teacher
+                        ) {
+
+                            subject =
+                                parsed.subject;
+
+                            teacher =
+                                parsed.teacher;
+                        }
+                    }
 
 
                     /*
-                     * SHCN / Sinh hoạt chủ nhiệm
+                     * BỔ SUNG QUAN TRỌNG:
+                     *
+                     * Trước đây GVCN chỉ lấy SHCN.
+                     * Bây giờ lấy TOÀN BỘ các môn/tiết
+                     * nằm trong cột của lớp chủ nhiệm.
+                     *
+                     * SHCN vẫn được giữ nguyên như dữ liệu
+                     * bình thường của lớp.
                      */
                     if (
-                        subjectKey.includes("shcn") ||
-                        subjectKey.includes(
-                            "sinh hoat chu nhiem"
+                        !subject &&
+                        !teacher
+                    ) {
+                        continue;
+                    }
+
+
+                    /*
+                     * Lọc môn nếu người dùng có nhập
+                     * "Lọc môn".
+                     */
+                    if (
+                        !subjectMatches(
+                            subject,
+                            options.subject
                         )
                     ) {
-
-                        if (
-                            !options.keyword ||
-                            teacherMatches(
-                                teacher,
-                                options.keyword
-                            ) ||
-                            targetClass
-                        ) {
-
-                            addScheduleItem(
-                                schedule,
-                                currentSession,
-                                day,
-                                period,
-                                time,
-                                className,
-                                subject,
-                                teacher
-                            );
-                        }
+                        continue;
                     }
+
+
+                    addScheduleItem(
+                        schedule,
+                        currentSession,
+                        day,
+                        period,
+                        time,
+                        className,
+                        subject,
+                        teacher
+                    );
                 }
             }
+
         }
     }
 
